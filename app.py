@@ -141,7 +141,14 @@ def apply_filter(img, filter_name, params):
     elif filter_name == "Wiener Filter":
         k = params['Kernel Size']
         if k % 2 == 0: k += 1
-        return np.clip(wiener(img.astype(np.float64), (k, k)), 0, 255).astype(np.uint8)
+        
+        # Suppress the divide-by-zero warnings for completely flat regions
+        with np.errstate(divide='ignore', invalid='ignore'):
+            out = wiener(img.astype(np.float64), (k, k))
+            # Safely catch any NaNs produced by the zero-division and set them to 0
+            out = np.nan_to_num(out, nan=0.0, posinf=255.0, neginf=0.0)
+            
+        return np.clip(out, 0, 255).astype(np.uint8)
     elif filter_name == "Median Filter":
         k = params['Kernel Size']
         if k % 2 == 0: k += 1
@@ -197,9 +204,19 @@ def apply_filter(img, filter_name, params):
         _, thresh = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         return thresh
     elif filter_name == "Frangi Ridge Filter":
-        out = frangi(img, sigmas=np.arange(1, params['Max Scale'], 1))
+        # Ensure max is always greater than min to prevent numpy errors
+        min_s, max_s = params['Min Scale'], params['Max Scale']
+        if min_s >= max_s: 
+            max_s = min_s + 1
+            
+        out = frangi(
+            img, 
+            sigmas=np.arange(min_s, max_s, 1), 
+            beta=params['Beta'],       # Blobness sensitivity
+            gamma=params['Gamma'],     # Structure/Contrast sensitivity 
+            black_ridges=params['Black Ridges']
+        )
         return (out / np.max(out) * 255).astype(np.uint8) if np.max(out) > 0 else img
-    return img
 
 # -------------------------------------------------------------------------
 # Sidebar UI: Pipeline Management & Dynamic Sliders
@@ -226,7 +243,7 @@ selected_filter = st.sidebar.selectbox("Choose a processing node to append:", ["
 if st.sidebar.button("Apply Filter"):
     if selected_filter != "-- Select --":
         st.session_state.pipeline.append({"name": selected_filter, "params": {}})
-        st.rerun()
+        # st.rerun() --> causing errors
     else:
         st.sidebar.warning("Please select a filter from the dropdown first.")
 
@@ -286,7 +303,11 @@ for index, step in enumerate(st.session_state.pipeline):
         elif f_name == "Morphological Bottom-Hat":
             p['Element Radius'] = st.slider(f"Disk SE Radius Size (px)", 1, 20, 5, key=f"bh_r_{index}")
         elif f_name == "Frangi Ridge Filter":
-            p['Max Scale'] = st.slider(f"Max Hessian Scaling Limit", 2, 10, 5, key=f"fr_s_{index}")
+            p['Min Scale'] = st.slider(f"Min Hessian Scale", 1, 5, 1, key=f"fr_min_{index}")
+            p['Max Scale'] = st.slider(f"Max Hessian Scale", 2, 10, 5, key=f"fr_max_{index}")
+            p['Beta'] = st.slider(f"Blobness (Beta - lower ignores blobs)", 0.1, 5.0, 0.5, step=0.1, key=f"fr_b_{index}")
+            p['Gamma'] = st.slider(f"Contrast/Structure (Gamma - lower finds faint lines)", 1.0, 50.0, 15.0, step=1.0, key=f"fr_g_{index}")
+            p['Black Ridges'] = st.checkbox(f"Look for Dark Cracks on Light Bg", value=True, key=f"fr_br_{index}")
             
         if st.button("Delete Element", key=f"del_{index}"):
             st.session_state.pipeline.pop(index)
@@ -302,19 +323,21 @@ st.title("🎛️ Digital Image Noise Filtering Engine & Preprocessing Playgroun
 
 uploaded_file = st.file_uploader("Load Target Inspection Image...", type=["png", "jpg", "jpeg"])
 
-# Generator fallback asset if no sample is supplied
+# --- NEW ROBUST IMAGE HANDLING ---
+# 1. Store the file in persistent session state the moment it's uploaded
 if uploaded_file is not None:
-    # Use .getvalue() instead of .read() so the buffer doesn't empty out on reruns
-    file_bytes = np.asarray(bytearray(uploaded_file.getvalue()), dtype=np.uint8)
+    st.session_state['persisted_image'] = uploaded_file.getvalue()
+
+# 2. Load from session state memory instead of directly from the widget
+if 'persisted_image' in st.session_state:
+    file_bytes = np.asarray(bytearray(st.session_state['persisted_image']), dtype=np.uint8)
     original_img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
 else:
     # Build a synthesized test grid with noise targets
     original_img = np.zeros((400, 400), dtype=np.uint8) + 128
     cv2.putText(original_img, "CRACK SIGNAL 0.4MM", (30, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.8, 20, 2)
-    cv2.line(original_img, (50, 220), (350, 240), 10, 2) # Simulated hairline crack
-    cv2.circle(original_img, (200, 200), 80, 200, -1)
+    cv2.line(original_img, (50, 220), (350, 240), 10, 2) 
     
-    # Inject additive gaussian + salt-and-pepper noise
     gauss = np.random.normal(0, 15, original_img.shape).astype(np.float64)
     sp_noise = np.random.rand(*original_img.shape)
     noisy_canvas = original_img.astype(np.float64) + gauss
@@ -322,6 +345,7 @@ else:
     noisy_canvas[sp_noise > 0.98] = 255
     original_img = np.clip(noisy_canvas, 0, 255).astype(np.uint8)
     st.info("No file uploaded. Displaying synthetic verification pattern containing noise anomalies.")
+# ---------------------------------
 
 # Run execution path through pipeline matrix
 processed_img = original_img.copy()
