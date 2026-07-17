@@ -217,6 +217,15 @@ def apply_filter(img, filter_name, params):
             black_ridges=params['Black Ridges']
         )
         return (out / np.max(out) * 255).astype(np.uint8) if np.max(out) > 0 else img
+    elif filter_name == "CLAHE":
+        # OpenCV's CLAHE requires a grayscale image
+        clahe = cv2.createCLAHE(
+            clipLimit=params['Clip Limit'], 
+            tileGridSize=(params['Grid Size'], params['Grid Size'])
+        )
+        return clahe.apply(img)
+    
+    return img
 
 # -------------------------------------------------------------------------
 # Sidebar UI: Pipeline Management & Dynamic Sliders
@@ -231,7 +240,7 @@ available_filters = [
     "Homomorphic Filter", "Lee Filter (SAR)", "Frost Filter (SAR)",
     "Wavelet Thresholding", "Total Variation Denoising", "Sobel Operator",
     "Scharr Operator", "Laplacian of Gaussian (LoG)", "Canny Edge Detector",
-    "Morphological Bottom-Hat", "Otsu Thresholding", "Frangi Ridge Filter"
+    "Morphological Bottom-Hat", "Otsu Thresholding", "Frangi Ridge Filter", "CLAHE"
 ]
 
 if 'pipeline' not in st.session_state:
@@ -308,7 +317,10 @@ for index, step in enumerate(st.session_state.pipeline):
             p['Beta'] = st.slider(f"Blobness (Beta - lower ignores blobs)", 0.1, 5.0, 0.5, step=0.1, key=f"fr_b_{index}")
             p['Gamma'] = st.slider(f"Contrast/Structure (Gamma - lower finds faint lines)", 1.0, 50.0, 15.0, step=1.0, key=f"fr_g_{index}")
             p['Black Ridges'] = st.checkbox(f"Look for Dark Cracks on Light Bg", value=True, key=f"fr_br_{index}")
-            
+        elif f_name == "CLAHE (Contrast Normalization)":
+            p['Clip Limit'] = st.slider(f"Contrast Threshold (Clip Limit)", 1.0, 10.0, 2.0, step=0.5, key=f"clahe_cl_{index}")
+            p['Grid Size'] = st.slider(f"Tile Grid Size", 2, 16, 8, step=2, key=f"clahe_gs_{index}")  
+
         if st.button("Delete Element", key=f"del_{index}"):
             st.session_state.pipeline.pop(index)
             st.rerun()
